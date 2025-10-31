@@ -1,9 +1,6 @@
 // This is your Prisma schema file,
 // learn more about it in the docs: https://pris.ly/d/prisma-schema
 
-// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
-// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
-
 generator client {
   provider = "prisma-client-js"
   output   = "../generated/prisma"
@@ -20,16 +17,156 @@ model User {
   email     String   @unique
   password  String
   role      Role     @default(STAFF)
-  status    Boolean  @default(true) // Active/inactive
+  status    Boolean  @default(true)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
-  managerId  Int?      // This will be set only for staff
+  managerId  Int?
   manager    User?     @relation("ManagerStaff", fields: [managerId], references: [id])
   staffList  User[]    @relation("ManagerStaff")
+  
+  warehouseId Int?
+  warehouse   Warehouse? @relation("UserWarehouse", fields: [warehouseId], references: [id])
+  
+  // Warehouse manager relation
+  managedWarehouses Warehouse[] @relation("WarehouseManager")
+  
+  // Inventory relations
+  inventoriesCreated     Inventory[]          @relation("InventoryCreatedBy")
+  transferRequestsCreated TransferRequest[]   @relation("TransferRequestCreatedBy")
+  transferRequestsApproved TransferRequest[]  @relation("TransferRequestApprovedBy")
+  inventoryLogs          InventoryLog[]
+}
+
+model Warehouse {
+  id        Int      @id @default(autoincrement())
+  name      String   @unique
+  location  String
+  status    Boolean  @default(true)
+  managerId Int?
+  manager   User?    @relation("WarehouseManager", fields: [managerId], references: [id])
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  users     User[]   @relation("UserWarehouse")
+  inventoryItems WarehouseInventory[]
+  transferRequestsFrom TransferRequest[] @relation("TransferFrom")
+  transferRequestsTo   TransferRequest[] @relation("TransferTo")
+}
+
+model Category {
+  id        Int      @id @default(autoincrement())
+  name      String   @unique
+  description String?
+  status    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  inventories Inventory[]
+}
+
+model Inventory {
+  id          Int      @id @default(autoincrement())
+  name        String
+  sku         String   @unique
+  description String?
+  categoryId  Int
+  category    Category @relation(fields: [categoryId], references: [id])
+  unit        String   // e.g., "pcs", "kg", "liter"
+  
+  // Pricing fields
+  purchasePrice Decimal  @default(0) @db.Decimal(10, 2)  // Cost price
+  sellingPrice  Decimal  @default(0) @db.Decimal(10, 2)  // Selling price
+  currency      String   @default("INR")
+  
+  minStock    Int      @default(0)
+  status      Boolean  @default(true)
+  createdById Int
+  createdBy   User     @relation("InventoryCreatedBy", fields: [createdById], references: [id])
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  warehouseInventories WarehouseInventory[]
+  transferRequestItems TransferRequestItem[]
+  logs                 InventoryLog[]
+}
+
+model WarehouseInventory {
+  id          Int       @id @default(autoincrement())
+  warehouseId Int
+  warehouse   Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
+  inventoryId Int
+  inventory   Inventory @relation(fields: [inventoryId], references: [id], onDelete: Cascade)
+  quantity    Int       @default(0)
+  updatedAt   DateTime  @updatedAt
+  
+  @@unique([warehouseId, inventoryId])
+}
+
+model TransferRequest {
+  id              Int      @id @default(autoincrement())
+  requestNumber   String   @unique
+  fromWarehouseId Int
+  fromWarehouse   Warehouse @relation("TransferFrom", fields: [fromWarehouseId], references: [id])
+  toWarehouseId   Int
+  toWarehouse     Warehouse @relation("TransferTo", fields: [toWarehouseId], references: [id])
+  status          TransferStatus @default(PENDING)
+  reason          String?
+  createdById     Int
+  createdBy       User     @relation("TransferRequestCreatedBy", fields: [createdById], references: [id])
+  approvedById    Int?
+  approvedBy      User?    @relation("TransferRequestApprovedBy", fields: [approvedById], references: [id])
+  approvedAt      DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  
+  items           TransferRequestItem[]
+}
+
+model TransferRequestItem {
+  id                Int             @id @default(autoincrement())
+  transferRequestId Int
+  transferRequest   TransferRequest @relation(fields: [transferRequestId], references: [id], onDelete: Cascade)
+  inventoryId       Int
+  inventory         Inventory       @relation(fields: [inventoryId], references: [id])
+  quantity          Int
+  createdAt         DateTime        @default(now())
+  
+  @@unique([transferRequestId, inventoryId])
+}
+
+model InventoryLog {
+  id          Int        @id @default(autoincrement())
+  inventoryId Int
+  inventory   Inventory  @relation(fields: [inventoryId], references: [id], onDelete: Cascade)
+  warehouseId Int?
+  action      LogAction
+  quantity    Int
+  previousQty Int
+  newQty      Int
+  remarks     String?
+  userId      Int
+  user        User       @relation(fields: [userId], references: [id])
+  createdAt   DateTime   @default(now())
 }
 
 enum Role {
   ADMIN
   MANAGER
   STAFF
+}
+
+enum TransferStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  COMPLETED
+  CANCELLED
+}
+
+enum LogAction {
+  ADD
+  REMOVE
+  TRANSFER_OUT
+  TRANSFER_IN
+  ADJUSTMENT
 }

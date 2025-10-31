@@ -4,7 +4,8 @@ import { getAllUsers,addUser, updateUser, toggleUserStatus, deleteUser } from '.
 
 const router = express.Router();
 
-router.use(protect, authorizeRoles('ADMIN'));
+router.use(protect, authorizeRoles('ADMIN', 'MANAGER'));
+
 router.get('/user/all', getAllUsers);
 router.post('/user/add', addUser);
 router.put('/user/:id', updateUser);
