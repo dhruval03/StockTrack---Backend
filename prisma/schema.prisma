@@ -35,6 +35,10 @@ model User {
   transferRequestsCreated TransferRequest[]   @relation("TransferRequestCreatedBy")
   transferRequestsApproved TransferRequest[]  @relation("TransferRequestApprovedBy")
   inventoryLogs          InventoryLog[]
+  
+  // Sales relations
+  expenses Expense[] @relation("ExpenseCreatedBy")
+  sales                  Sale[]               @relation("SaleCreatedBy")
 }
 
 model Warehouse {
@@ -51,6 +55,7 @@ model Warehouse {
   inventoryItems WarehouseInventory[]
   transferRequestsFrom TransferRequest[] @relation("TransferFrom")
   transferRequestsTo   TransferRequest[] @relation("TransferTo")
+  sales     Sale[]   @relation("WarehouseSales")
 }
 
 model Category {
@@ -88,6 +93,7 @@ model Inventory {
   warehouseInventories WarehouseInventory[]
   transferRequestItems TransferRequestItem[]
   logs                 InventoryLog[]
+  saleItems            SaleItem[]
 }
 
 model WarehouseInventory {
@@ -149,6 +155,101 @@ model InventoryLog {
   createdAt   DateTime   @default(now())
 }
 
+// ============= SALES MODELS =============
+
+model Sale {
+  id            Int          @id @default(autoincrement())
+  saleNumber    String       @unique  // e.g., "SALE-20251031-0001"
+  warehouseId   Int
+  warehouse     Warehouse    @relation("WarehouseSales", fields: [warehouseId], references: [id])
+  
+  // Sale amounts
+  subtotal      Decimal      @db.Decimal(10, 2)
+  discount      Decimal      @default(0) @db.Decimal(10, 2)
+  discountType  DiscountType @default(FIXED)
+  discountValue Decimal      @default(0) @db.Decimal(10, 2)
+  tax           Decimal      @default(0) @db.Decimal(10, 2)
+  total         Decimal      @db.Decimal(10, 2)
+  
+  // Payment
+  paymentMethod PaymentMethod
+  paymentStatus PaymentStatus @default(COMPLETED)
+  
+  // Customer information (optional)
+  customerName  String?
+  customerPhone String?
+  customerEmail String?
+  customerAddress String?
+  
+  // Staff who made the sale
+  createdById   Int
+  createdBy     User         @relation("SaleCreatedBy", fields: [createdById], references: [id])
+  
+  // Additional info
+  remarks       String?
+  status        SaleStatus   @default(COMPLETED)
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+  
+  items         SaleItem[]
+}
+
+model SaleItem {
+  id          Int       @id @default(autoincrement())
+  saleId      Int
+  sale        Sale      @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  inventoryId Int
+  inventory   Inventory @relation(fields: [inventoryId], references: [id])
+  
+  quantity    Int
+  unitPrice   Decimal   @db.Decimal(10, 2)  // Price at time of sale
+  totalPrice  Decimal   @db.Decimal(10, 2)  // quantity * unitPrice
+  
+  createdAt   DateTime  @default(now())
+  
+  @@unique([saleId, inventoryId])
+}
+
+model Expense {
+  id          Int            @id @default(autoincrement())
+  title       String
+  category    ExpenseCategory
+  amount      Decimal        @db.Decimal(10, 2)
+  type        TransactionType
+  date        DateTime
+  description String?
+  reference   String         @unique
+  status      ExpenseStatus  @default(COMPLETED)
+  createdById Int
+  createdBy   User           @relation("ExpenseCreatedBy", fields: [createdById], references: [id])
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+}
+
+// ============= ENUMS =============
+
+enum ExpenseCategory {
+  ORDERS
+  EMPLOYEE
+  UTILITIES
+  LOGISTICS
+  MAINTENANCE
+  MARKETING
+  REVENUE
+  OTHER
+}
+
+enum TransactionType {
+  INCOME
+  EXPENSE
+}
+
+enum ExpenseStatus {
+  COMPLETED
+  PENDING
+  CANCELLED
+}
+
 enum Role {
   ADMIN
   MANAGER
@@ -169,4 +270,31 @@ enum LogAction {
   TRANSFER_OUT
   TRANSFER_IN
   ADJUSTMENT
+  SALE
+}
+
+enum PaymentMethod {
+  CASH
+  CARD
+  UPI
+  NET_BANKING
+  OTHER
+}
+
+enum PaymentStatus {
+  PENDING
+  COMPLETED
+  FAILED
+  REFUNDED
+}
+
+enum DiscountType {
+  PERCENTAGE
+  FIXED
+}
+
+enum SaleStatus {
+  COMPLETED
+  CANCELLED
+  REFUNDED
 }

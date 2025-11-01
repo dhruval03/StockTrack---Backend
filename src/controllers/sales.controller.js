@@ -1,558 +1,534 @@
+// controllers/sales.controller.js
 import { PrismaClient } from '../../generated/prisma/index.js';
 
 const prisma = new PrismaClient();
 
-// Get all sales (All authenticated users)
-export const getAllsales = async (req, res) => {
-  try {
-    const sales = await prisma.sales.findMany({
-      include: {
-        category: { select: { id: true, name: true } },
-        createdBy: { select: { id: true, name: true } },
-        warehousesales: {
-          include: {
-            warehouse: { select: { id: true, name: true, location: true } }
-          }
-        },
-        _count: {
-          select: { warehousesales: true }
-        }
-      },
-      orderBy: { createdAt: 'desc' }
-    });
-
-    // Calculate total quantity and total value across all warehouses
-    const salesWithTotal = sales.map(inv => {
-      const totalQuantity = inv.warehousesales.reduce((sum, wi) => sum + wi.quantity, 0);
-      const totalPurchaseValue = totalQuantity * parseFloat(inv.purchasePrice);
-      const totalSellingValue = totalQuantity * parseFloat(inv.sellingPrice);
-      const potentialProfit = totalSellingValue - totalPurchaseValue;
-      
-      return {
-        ...inv,
-        totalQuantity,
-        totalPurchaseValue: totalPurchaseValue.toFixed(2),
-        totalSellingValue: totalSellingValue.toFixed(2),
-        potentialProfit: potentialProfit.toFixed(2),
-        profitMargin: totalPurchaseValue > 0 ? ((potentialProfit / totalPurchaseValue) * 100).toFixed(2) : '0.00'
-      };
-    });
-
-    res.status(200).json(salesWithTotal);
-  } catch (err) {
-    res.status(500).json({ message: 'Server error', error: err.message });
-  }
-};
-
-// Get single sales
-export const getsalesById = async (req, res) => {
-  const { id } = req.params;
+const createExpenseEntry = async (data, tx = prisma) => {
+  const { title, category, amount, type, date, description, reference, userId } = data;
   
-  try {
-    const sales = await prisma.sales.findUnique({
-      where: { id: parseInt(id) },
-      include: {
-        category: true,
-        createdBy: { select: { id: true, name: true } },
-        warehousesales: {
-          include: {
-            warehouse: { select: { id: true, name: true, location: true } }
-          }
-        },
-        logs: {
-          include: {
-            user: { select: { id: true, name: true } }
-          },
-          orderBy: { createdAt: 'desc' },
-          take: 50
-        }
-      }
-    });
-
-    if (!sales) {
-      return res.status(404).json({ message: 'sales not found' });
-    }
-
-    const totalQuantity = sales.warehousesales.reduce((sum, wi) => sum + wi.quantity, 0);
-    const totalPurchaseValue = totalQuantity * parseFloat(sales.purchasePrice);
-    const totalSellingValue = totalQuantity * parseFloat(sales.sellingPrice);
-    const potentialProfit = totalSellingValue - totalPurchaseValue;
-
-    res.status(200).json({ 
-      ...sales, 
-      totalQuantity,
-      totalPurchaseValue: totalPurchaseValue.toFixed(2),
-      totalSellingValue: totalSellingValue.toFixed(2),
-      potentialProfit: potentialProfit.toFixed(2),
-      profitMargin: totalPurchaseValue > 0 ? ((potentialProfit / totalPurchaseValue) * 100).toFixed(2) : '0.00'
-    });
-  } catch (err) {
-    res.status(500).json({ message: 'Server error', error: err.message });
-  }
-};
-
-// Add sales (Admin only)
-export const addsales = async (req, res) => {
-  try {
-    const { name, sku, description, categoryId, unit, minStock, purchasePrice, sellingPrice, currency } = req.body;
-    const userId = req.user.id;
-
-    const existing = await prisma.sales.findUnique({ where: { sku } });
-    if (existing) {
-      return res.status(400).json({ message: 'SKU already exists' });
-    }
-
-    // Validate pricing
-    const purchase = parseFloat(purchasePrice) || 0;
-    const selling = parseFloat(sellingPrice) || 0;
-
-    if (purchase < 0 || selling < 0) {
-      return res.status(400).json({ message: 'Prices cannot be negative' });
-    }
-
-    if (selling < purchase) {
-      return res.status(400).json({ message: 'Warning: Selling price is lower than purchase price' });
-    }
-
-    const sales = await prisma.sales.create({
-      data: {
-        name,
-        sku,
-        description,
-        categoryId: parseInt(categoryId),
-        unit,
-        minStock: parseInt(minStock) || 0,
-        purchasePrice: purchase,
-        sellingPrice: selling,
-        currency: currency || 'INR',
-        createdById: userId,
-      },
-      include: {
-        category: true,
-        createdBy: { select: { id: true, name: true } }
-      }
-    });
-
-    res.status(201).json({ message: 'sales created', sales });
-  } catch (err) {
-    res.status(500).json({ message: 'Server error', error: err.message });
-  }
-};
-
-// Update sales (Admin only)
-export const updatesales = async (req, res) => {
-  const { id } = req.params;
-  const { name, sku, description, categoryId, unit, minStock, purchasePrice, sellingPrice, currency } = req.body;
-
-  try {
-    // Validate pricing if provided
-    if (purchasePrice !== undefined || sellingPrice !== undefined) {
-      const purchase = parseFloat(purchasePrice) || 0;
-      const selling = parseFloat(sellingPrice) || 0;
-
-      if (purchase < 0 || selling < 0) {
-        return res.status(400).json({ message: 'Prices cannot be negative' });
-      }
-    }
-
-    const updateData = {
-      name,
-      sku,
+  return await tx.expense.create({
+    data: {
+      title,
+      category,
+      amount,
+      type,
+      date: date || new Date(),
       description,
-      unit,
-    };
-
-    if (categoryId) updateData.categoryId = parseInt(categoryId);
-    if (minStock !== undefined) updateData.minStock = parseInt(minStock);
-    if (purchasePrice !== undefined) updateData.purchasePrice = parseFloat(purchasePrice);
-    if (sellingPrice !== undefined) updateData.sellingPrice = parseFloat(sellingPrice);
-    if (currency) updateData.currency = currency;
-
-    const sales = await prisma.sales.update({
-      where: { id: parseInt(id) },
-      data: updateData,
-      include: {
-        category: true,
-        createdBy: { select: { id: true, name: true } }
-      }
-    });
-
-    res.json({ message: 'sales updated', sales });
-  } catch (err) {
-    if (err.code === 'P2002') {
-      return res.status(400).json({ message: 'SKU already exists' });
+      reference,
+      status: 'COMPLETED',
+      createdById: userId
     }
-    if (err.code === 'P2025') {
-      return res.status(404).json({ message: 'sales not found' });
-    }
-    res.status(500).json({ message: 'Error updating sales', error: err.message });
-  }
+  });
 };
 
-// Toggle sales status (Admin only)
-export const togglesalesStatus = async (req, res) => {
-  const { id } = req.params;
-  const { status } = req.body;
-
-  try {
-    const sales = await prisma.sales.update({
-      where: { id: parseInt(id) },
-      data: { status },
-    });
-
-    res.json({ message: `sales ${status ? 'activated' : 'deactivated'}`, sales });
-  } catch (err) {
-    res.status(500).json({ message: 'Error changing status', error: err.message });
-  }
+// Generate expense reference
+const generateExpenseReference = async (type, tx = prisma) => {
+  const today = new Date();
+  const dateStr = today.toISOString().split('T')[0].replace(/-/g, '');
+  
+  const prefix = type === 'INCOME' ? 'INC' : 'EXP';
+  const count = await tx.expense.count({
+    where: {
+      reference: { startsWith: `${prefix}-${dateStr}` }
+    }
+  });
+  
+  const sequence = String(count + 1).padStart(4, '0');
+  return `${prefix}-${dateStr}-${sequence}`;
 };
 
-// Delete sales (Admin only)
-export const deletesales = async (req, res) => {
-  const { id } = req.params;
+// Generate unique sale number
+const generateSaleNumber = async () => {
+  const today = new Date();
+  const dateStr = today.toISOString().split('T')[0].replace(/-/g, '');
+  
+  const startOfDay = new Date(today.setHours(0, 0, 0, 0));
+  const endOfDay = new Date(today.setHours(23, 59, 59, 999));
+  
+  const todaySalesCount = await prisma.sale.count({
+    where: {
+      createdAt: {
+        gte: startOfDay,
+        lte: endOfDay,
+      },
+    },
+  });
+  
+  const sequence = String(todaySalesCount + 1).padStart(4, '0');
+  return `SALE-${dateStr}-${sequence}`;
+};
 
+// Create a new sale
+export const createSale = async (req, res) => {
   try {
-    // Check if sales has stock in any warehouse
-    const sales = await prisma.sales.findUnique({
-      where: { id: parseInt(id) },
-      include: { warehousesales: true }
+    const userId = req.user.id;
+    const {
+      warehouseId,
+      items, // [{ inventoryId, quantity, unitPrice, totalPrice }]
+      subtotal,
+      discount,
+      discountType,
+      discountValue,
+      tax,
+      total,
+      paymentMethod,
+      customerName,
+      customerPhone,
+      customerEmail,
+      customerAddress,
+      remarks,
+    } = req.body;
+
+    // Validation
+    if (!warehouseId) {
+      return res.status(400).json({ message: 'Warehouse ID is required' });
+    }
+
+    if (!items || items.length === 0) {
+      return res.status(400).json({ message: 'Sale must have at least one item' });
+    }
+
+    // Verify user has access to this warehouse
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { warehouseId: true, role: true },
     });
 
-    const totalStock = sales?.warehousesales.reduce((sum, wi) => sum + wi.quantity, 0) || 0;
-
-    if (totalStock > 0) {
-      return res.status(400).json({ 
-        message: 'Cannot delete sales with existing stock. Please remove all stock first.' 
+    // Staff can only make sales for their assigned warehouse
+    if (user.role === 'STAFF' && user.warehouseId !== warehouseId) {
+      return res.status(403).json({ 
+        message: 'You can only make sales for your assigned warehouse' 
       });
     }
 
-    await prisma.sales.delete({ where: { id: parseInt(id) } });
-    res.json({ message: 'sales deleted' });
-  } catch (err) {
-    if (err.code === 'P2025') {
-      return res.status(404).json({ message: 'sales not found' });
-    }
-    res.status(500).json({ message: 'Error deleting sales', error: err.message });
-  }
-};
-
-// Assign sales to warehouse with quantity (Admin only)
-export const assignsalesToWarehouse = async (req, res) => {
-  const { salesId, warehouseId, quantity } = req.body;
-  const userId = req.user.id;
-
-  try {
-    const qty = parseInt(quantity);
-    
-    if (qty < 0) {
-      return res.status(400).json({ message: 'Quantity cannot be negative' });
-    }
-
-    // Check if sales exists
-    const sales = await prisma.sales.findUnique({
-      where: { id: parseInt(salesId) }
-    });
-
-    if (!sales) {
-      return res.status(404).json({ message: 'sales not found' });
-    }
-
-    // Check if warehouse exists
+    // Verify warehouse exists
     const warehouse = await prisma.warehouse.findUnique({
-      where: { id: parseInt(warehouseId) }
+      where: { id: warehouseId },
     });
 
     if (!warehouse) {
       return res.status(404).json({ message: 'Warehouse not found' });
     }
 
-    // Use transaction to ensure data consistency
-    const result = await prisma.$transaction(async (tx) => {
-      // Check if assignment already exists
-      const existing = await tx.warehousesales.findUnique({
+    // Check stock availability for all items
+    for (const item of items) {
+      const warehouseInventory = await prisma.warehouseInventory.findFirst({
         where: {
-          warehouseId_salesId: {
-            warehouseId: parseInt(warehouseId),
-            salesId: parseInt(salesId)
-          }
-        }
+          warehouseId: warehouseId,
+          inventoryId: item.inventoryId,
+        },
       });
 
-      let warehousesales;
-      const previousQty = existing?.quantity || 0;
-      const newQty = previousQty + qty;
-
-      if (existing) {
-        // Update existing assignment
-        warehousesales = await tx.warehousesales.update({
-          where: {
-            warehouseId_salesId: {
-              warehouseId: parseInt(warehouseId),
-              salesId: parseInt(salesId)
-            }
-          },
-          data: { quantity: newQty },
-          include: {
-            warehouse: { select: { id: true, name: true } },
-            sales: { select: { id: true, name: true, sku: true } }
-          }
+      if (!warehouseInventory) {
+        const inventory = await prisma.inventory.findUnique({
+          where: { id: item.inventoryId },
         });
-      } else {
-        // Create new assignment
-        warehousesales = await tx.warehousesales.create({
+        return res.status(400).json({ 
+          message: `Product "${inventory?.name || 'Unknown'}" is not available in this warehouse` 
+        });
+      }
+
+      if (warehouseInventory.quantity < item.quantity) {
+        const inventory = await prisma.inventory.findUnique({
+          where: { id: item.inventoryId },
+        });
+        return res.status(400).json({ 
+          message: `Insufficient stock for "${inventory?.name || 'Unknown'}". Available: ${warehouseInventory.quantity}, Requested: ${item.quantity}` 
+        });
+      }
+    }
+
+    // Generate sale number
+    const saleNumber = await generateSaleNumber();
+
+    // Create sale with transaction
+    const result = await prisma.$transaction(async (tx) => {
+      // Create sale
+      const sale = await tx.sale.create({
+        data: {
+          saleNumber,
+          warehouseId,
+          subtotal,
+          discount,
+          discountType: discountType.toUpperCase(),
+          discountValue,
+          tax,
+          total,
+          paymentMethod: paymentMethod.toUpperCase(),
+          paymentStatus: 'COMPLETED',
+          customerName,
+          customerPhone,
+          customerEmail,
+          customerAddress,
+          remarks,
+          status: 'COMPLETED',
+          createdById: userId,
+        },
+      });
+
+      // Create sale items and update inventory
+      for (const item of items) {
+        // Create sale item
+        await tx.saleItem.create({
           data: {
-            warehouseId: parseInt(warehouseId),
-            salesId: parseInt(salesId),
-            quantity: qty
+            saleId: sale.id,
+            inventoryId: item.inventoryId,
+            quantity: item.quantity,
+            unitPrice: item.unitPrice,
+            totalPrice: item.totalPrice,
           },
-          include: {
-            warehouse: { select: { id: true, name: true } },
-            sales: { select: { id: true, name: true, sku: true } }
-          }
+        });
+
+        // Update warehouse inventory
+        const warehouseInventory = await tx.warehouseInventory.findFirst({
+          where: {
+            warehouseId: warehouseId,
+            inventoryId: item.inventoryId,
+          },
+        });
+
+        const newQuantity = warehouseInventory.quantity - item.quantity;
+
+        await tx.warehouseInventory.update({
+          where: { id: warehouseInventory.id },
+          data: { quantity: newQuantity },
+        });
+
+        // Create inventory log
+        await tx.inventoryLog.create({
+          data: {
+            inventoryId: item.inventoryId,
+            warehouseId: warehouseId,
+            action: 'SALE',
+            quantity: item.quantity,
+            previousQty: warehouseInventory.quantity,
+            newQty: newQuantity,
+            remarks: `Sale: ${saleNumber}`,
+            userId: userId,
+          },
         });
       }
 
-      // Create log entry
-      await tx.salesLog.create({
-        data: {
-          salesId: parseInt(salesId),
-          warehouseId: parseInt(warehouseId),
-          action: 'ADD',
-          quantity: qty,
-          previousQty,
-          newQty,
-          remarks: `Added ${qty} ${sales.unit} to ${warehouse.name}`,
-          userId
-        }
-      });
-
-      return warehousesales;
-    });
-
-    res.status(200).json({ 
-      message: 'sales assigned to warehouse successfully', 
-      warehousesales: result 
-    });
-  } catch (err) {
-    res.status(500).json({ message: 'Error assigning sales', error: err.message });
-  }
-};
-
-// Adjust sales quantity in warehouse (Admin only)
-export const adjustsalesQuantity = async (req, res) => {
-  const { warehouseId, salesId, quantity, remarks } = req.body;
-  const userId = req.user.id;
-
-  try {
-    const qty = parseInt(quantity);
-
-    const existing = await prisma.warehousesales.findUnique({
-      where: {
-        warehouseId_salesId: {
-          warehouseId: parseInt(warehouseId),
-          salesId: parseInt(salesId)
-        }
-      },
-      include: {
-        sales: true,
-        warehouse: true
-      }
-    });
-
-    if (!existing) {
-      return res.status(404).json({ message: 'sales not found in this warehouse' });
-    }
-
-    const newQty = existing.quantity + qty;
-
-    if (newQty < 0) {
-      return res.status(400).json({ message: 'Insufficient stock. Cannot reduce below zero.' });
-    }
-
-    const result = await prisma.$transaction(async (tx) => {
-      const updated = await tx.warehousesales.update({
-        where: {
-          warehouseId_salesId: {
-            warehouseId: parseInt(warehouseId),
-            salesId: parseInt(salesId)
-          }
-        },
-        data: { quantity: newQty },
+      // Fetch complete sale with items
+      const completeSale = await tx.sale.findUnique({
+        where: { id: sale.id },
         include: {
-          warehouse: { select: { id: true, name: true } },
-          sales: { select: { id: true, name: true, sku: true } }
-        }
-      });
-
-      await tx.salesLog.create({
-        data: {
-          salesId: parseInt(salesId),
-          warehouseId: parseInt(warehouseId),
-          action: 'ADJUSTMENT',
-          quantity: Math.abs(qty),
-          previousQty: existing.quantity,
-          newQty,
-          remarks: remarks || `Adjusted by ${qty > 0 ? '+' : ''}${qty} ${existing.sales.unit}`,
-          userId
-        }
-      });
-
-      return updated;
-    });
-
-    res.json({ message: 'sales quantity adjusted', warehousesales: result });
-  } catch (err) {
-    res.status(500).json({ message: 'Error adjusting sales', error: err.message });
-  }
-};
-
-// Get sales by warehouse
-export const getsalesByWarehouse = async (req, res) => {
-  const { warehouseId } = req.params;
-
-  try {
-    const warehousesales = await prisma.warehousesales.findMany({
-      where: { warehouseId: parseInt(warehouseId) },
-      include: {
-        sales: {
-          include: {
-            category: true
-          }
+          items: {
+            include: {
+              inventory: {
+                select: {
+                  name: true,
+                  sku: true,
+                  unit: true,
+                },
+              },
+            },
+          },
+          warehouse: {
+            select: {
+              name: true,
+              location: true,
+            },
+          },
+          createdBy: {
+            select: {
+              name: true,
+              email: true,
+            },
+          },
         },
-        warehouse: { select: { id: true, name: true, location: true } }
-      }
+      });
+
+      return completeSale;
     });
 
-    // Add value calculations
-    const salesWithValue = warehousesales.map(wi => {
-      const purchaseValue = wi.quantity * parseFloat(wi.sales.purchasePrice);
-      const sellingValue = wi.quantity * parseFloat(wi.sales.sellingPrice);
-      
-      return {
-        ...wi,
-        purchaseValue: purchaseValue.toFixed(2),
-        sellingValue: sellingValue.toFixed(2),
-        potentialProfit: (sellingValue - purchaseValue).toFixed(2)
-      };
+    res.status(201).json({
+      message: 'Sale completed successfully',
+      sale: result,
     });
-
-    res.status(200).json(salesWithValue);
   } catch (err) {
-    res.status(500).json({ message: 'Server error', error: err.message });
+    console.error('Create sale error:', err);
+    res.status(500).json({ 
+      message: 'Failed to create sale', 
+      error: err.message 
+    });
   }
 };
 
-// Get low stock alerts
-export const getLowStockAlerts = async (req, res) => {
+// Get all sales with filters
+export const getAllSales = async (req, res) => {
   try {
-    const sales = await prisma.sales.findMany({
-      where: { status: true },
+    const userId = req.user.id;
+    const { warehouseId, startDate, endDate, status } = req.query;
+
+    // Build where clause
+    const where = {};
+
+    // Staff can only see sales from their warehouse
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { warehouseId: true, role: true },
+    });
+
+    if (user.role === 'STAFF') {
+      where.warehouseId = user.warehouseId;
+    } else if (warehouseId) {
+      where.warehouseId = parseInt(warehouseId);
+    }
+
+    if (status) {
+      where.status = status.toUpperCase();
+    }
+
+    if (startDate || endDate) {
+      where.createdAt = {};
+      if (startDate) where.createdAt.gte = new Date(startDate);
+      if (endDate) where.createdAt.lte = new Date(endDate);
+    }
+
+    const sales = await prisma.sale.findMany({
+      where,
       include: {
-        category: true,
-        warehousesales: {
+        items: {
           include: {
-            warehouse: { select: { id: true, name: true, location: true } }
-          }
+            inventory: {
+              select: {
+                name: true,
+                sku: true,
+              },
+            },
+          },
+        },
+        warehouse: {
+          select: {
+            name: true,
+            location: true,
+          },
+        },
+        createdBy: {
+          select: {
+            name: true,
+          },
+        },
+      },
+      orderBy: {
+        createdAt: 'desc',
+      },
+    });
+
+    res.status(200).json(sales);
+  } catch (err) {
+    console.error('Get sales error:', err);
+    res.status(500).json({ 
+      message: 'Failed to fetch sales', 
+      error: err.message 
+    });
+  }
+};
+
+// Get sale by ID
+export const getSaleById = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user.id;
+
+    const sale = await prisma.sale.findUnique({
+      where: { id: parseInt(id) },
+      include: {
+        items: {
+          include: {
+            inventory: true,
+          },
+        },
+        warehouse: true,
+        createdBy: {
+          select: {
+            name: true,
+            email: true,
+          },
+        },
+      },
+    });
+
+    if (!sale) {
+      return res.status(404).json({ message: 'Sale not found' });
+    }
+
+    // Check access for staff
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { warehouseId: true, role: true },
+    });
+
+    if (user.role === 'STAFF' && sale.warehouseId !== user.warehouseId) {
+      return res.status(403).json({ 
+        message: 'You can only view sales from your warehouse' 
+      });
+    }
+
+    res.status(200).json(sale);
+  } catch (err) {
+    console.error('Get sale error:', err);
+    res.status(500).json({ 
+      message: 'Failed to fetch sale', 
+      error: err.message 
+    });
+  }
+};
+
+// Get sales statistics
+export const getSalesStats = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { warehouseId, startDate, endDate } = req.query;
+
+    // Build where clause
+    const where = { status: 'COMPLETED' };
+
+    // Staff can only see stats from their warehouse
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { warehouseId: true, role: true },
+    });
+
+    if (user.role === 'STAFF') {
+      where.warehouseId = user.warehouseId;
+    } else if (warehouseId) {
+      where.warehouseId = parseInt(warehouseId);
+    }
+
+    if (startDate || endDate) {
+      where.createdAt = {};
+      if (startDate) where.createdAt.gte = new Date(startDate);
+      if (endDate) where.createdAt.lte = new Date(endDate);
+    }
+
+    // Get aggregated stats
+    const stats = await prisma.sale.aggregate({
+      where,
+      _count: { id: true },
+      _sum: {
+        total: true,
+        subtotal: true,
+        discount: true,
+        tax: true,
+      },
+    });
+
+    // Get total items sold
+    const itemsStats = await prisma.saleItem.aggregate({
+      where: {
+        sale: where,
+      },
+      _sum: {
+        quantity: true,
+      },
+    });
+
+    res.status(200).json({
+      totalSales: stats._count.id || 0,
+      totalRevenue: parseFloat(stats._sum.total || 0),
+      totalSubtotal: parseFloat(stats._sum.subtotal || 0),
+      totalDiscount: parseFloat(stats._sum.discount || 0),
+      totalTax: parseFloat(stats._sum.tax || 0),
+      totalItemsSold: itemsStats._sum.quantity || 0,
+    });
+  } catch (err) {
+    console.error('Get sales stats error:', err);
+    res.status(500).json({ 
+      message: 'Failed to fetch sales statistics', 
+      error: err.message 
+    });
+  }
+};
+
+// Cancel sale (Admin/Manager only)
+export const cancelSale = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { reason } = req.body;
+    const userId = req.user.id;
+
+    // Check if user is admin or manager
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { role: true },
+    });
+
+    if (user.role === 'STAFF') {
+      return res.status(403).json({ 
+        message: 'Only admins and managers can cancel sales' 
+      });
+    }
+
+    const sale = await prisma.sale.findUnique({
+      where: { id: parseInt(id) },
+      include: {
+        items: true,
+      },
+    });
+
+    if (!sale) {
+      return res.status(404).json({ message: 'Sale not found' });
+    }
+
+    if (sale.status === 'CANCELLED') {
+      return res.status(400).json({ message: 'Sale is already cancelled' });
+    }
+
+    // Revert inventory in transaction
+    await prisma.$transaction(async (tx) => {
+      // Update sale status
+      await tx.sale.update({
+        where: { id: sale.id },
+        data: {
+          status: 'CANCELLED',
+          remarks: `${sale.remarks || ''}\nCancelled: ${reason || 'No reason provided'}`,
+        },
+      });
+
+      // Restore inventory for each item
+      for (const item of sale.items) {
+        const warehouseInventory = await tx.warehouseInventory.findFirst({
+          where: {
+            warehouseId: sale.warehouseId,
+            inventoryId: item.inventoryId,
+          },
+        });
+
+        if (warehouseInventory) {
+          const newQuantity = warehouseInventory.quantity + item.quantity;
+
+          await tx.warehouseInventory.update({
+            where: { id: warehouseInventory.id },
+            data: { quantity: newQuantity },
+          });
+
+          // Create inventory log
+          await tx.inventoryLog.create({
+            data: {
+              inventoryId: item.inventoryId,
+              warehouseId: sale.warehouseId,
+              action: 'ADJUSTMENT',
+              quantity: item.quantity,
+              previousQty: warehouseInventory.quantity,
+              newQty: newQuantity,
+              remarks: `Sale cancelled: ${sale.saleNumber}`,
+              userId: userId,
+            },
+          });
         }
       }
     });
 
-    const lowStockItems = [];
-
-    sales.forEach(inv => {
-      const totalQty = inv.warehousesales.reduce((sum, wi) => sum + wi.quantity, 0);
-      
-      if (totalQty <= inv.minStock) {
-        const purchaseValue = totalQty * parseFloat(inv.purchasePrice);
-        const sellingValue = totalQty * parseFloat(inv.sellingPrice);
-        
-        lowStockItems.push({
-          ...inv,
-          totalQuantity: totalQty,
-          deficit: inv.minStock - totalQty,
-          totalPurchaseValue: purchaseValue.toFixed(2),
-          totalSellingValue: sellingValue.toFixed(2)
-        });
-      }
-    });
-
-    res.status(200).json(lowStockItems);
-  } catch (err) {
-    res.status(500).json({ message: 'Server error', error: err.message });
-  }
-};
-
-// Get sales value summary (Admin only)
-export const getsalesValueSummary = async (req, res) => {
-  try {
-    const sales = await prisma.sales.findMany({
-      where: { status: true },
-      include: {
-        warehousesales: true
-      }
-    });
-
-    let totalPurchaseValue = 0;
-    let totalSellingValue = 0;
-    let totalItems = 0;
-
-    sales.forEach(inv => {
-      const qty = inv.warehousesales.reduce((sum, wi) => sum + wi.quantity, 0);
-      totalItems += qty;
-      totalPurchaseValue += qty * parseFloat(inv.purchasePrice);
-      totalSellingValue += qty * parseFloat(inv.sellingPrice);
-    });
-
-    const potentialProfit = totalSellingValue - totalPurchaseValue;
-    const profitMargin = totalPurchaseValue > 0 ? (potentialProfit / totalPurchaseValue) * 100 : 0;
-
     res.status(200).json({
-      totalItems,
-      totalPurchaseValue: totalPurchaseValue.toFixed(2),
-      totalSellingValue: totalSellingValue.toFixed(2),
-      potentialProfit: potentialProfit.toFixed(2),
-      profitMargin: profitMargin.toFixed(2),
-      currency: 'INR'
+      message: 'Sale cancelled successfully',
     });
   } catch (err) {
-    res.status(500).json({ message: 'Server error', error: err.message });
-  }
-};
-
-// Get warehouse value summary (Admin/Manager)
-export const getWarehouseValueSummary = async (req, res) => {
-  const { warehouseId } = req.params;
-
-  try {
-    const warehousesales = await prisma.warehousesales.findMany({
-      where: { warehouseId: parseInt(warehouseId) },
-      include: {
-        sales: true
-      }
+    console.error('Cancel sale error:', err);
+    res.status(500).json({ 
+      message: 'Failed to cancel sale', 
+      error: err.message 
     });
-
-    let totalPurchaseValue = 0;
-    let totalSellingValue = 0;
-    let totalItems = 0;
-
-    warehousesales.forEach(wi => {
-      totalItems += wi.quantity;
-      totalPurchaseValue += wi.quantity * parseFloat(wi.sales.purchasePrice);
-      totalSellingValue += wi.quantity * parseFloat(wi.sales.sellingPrice);
-    });
-
-    const potentialProfit = totalSellingValue - totalPurchaseValue;
-    const profitMargin = totalPurchaseValue > 0 ? (potentialProfit / totalPurchaseValue) * 100 : 0;
-
-    res.status(200).json({
-      warehouseId: parseInt(warehouseId),
-      totalItems,
-      totalPurchaseValue: totalPurchaseValue.toFixed(2),
-      totalSellingValue: totalSellingValue.toFixed(2),
-      potentialProfit: potentialProfit.toFixed(2),
-      profitMargin: profitMargin.toFixed(2),
-      currency: 'INR'
-    });
-  } catch (err) {
-    res.status(500).json({ message: 'Server error', error: err.message });
   }
 };

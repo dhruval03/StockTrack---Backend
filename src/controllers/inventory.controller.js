@@ -2,6 +2,41 @@ import { PrismaClient } from '../../generated/prisma/index.js';
 
 const prisma = new PrismaClient();
 
+// Helper function to create expense entry
+const createExpenseEntry = async (data, tx = prisma) => {
+  const { title, category, amount, type, date, description, reference, userId } = data;
+  
+  return await tx.expense.create({
+    data: {
+      title,
+      category,
+      amount,
+      type,
+      date: date || new Date(),
+      description,
+      reference,
+      status: 'COMPLETED',
+      createdById: userId
+    }
+  });
+};
+
+// Generate expense reference
+const generateExpenseReference = async (type, tx = prisma) => {
+  const today = new Date();
+  const dateStr = today.toISOString().split('T')[0].replace(/-/g, '');
+  
+  const prefix = type === 'INCOME' ? 'INC' : 'EXP';
+  const count = await tx.expense.count({
+    where: {
+      reference: { startsWith: `${prefix}-${dateStr}` }
+    }
+  });
+  
+  const sequence = String(count + 1).padStart(4, '0');
+  return `${prefix}-${dateStr}-${sequence}`;
+};
+
 // Get all inventories (All authenticated users)
 export const getAllInventories = async (req, res) => {
   try {
@@ -311,7 +346,7 @@ export const assignInventoryToWarehouse = async (req, res) => {
         });
       }
 
-      // Create log entry
+      // Create inventory log
       await tx.inventoryLog.create({
         data: {
           inventoryId: parseInt(inventoryId),
@@ -325,14 +360,30 @@ export const assignInventoryToWarehouse = async (req, res) => {
         }
       });
 
+      // 🆕 CREATE EXPENSE ENTRY FOR INVENTORY PURCHASE
+      const expenseAmount = qty * parseFloat(inventory.purchasePrice);
+      const expenseReference = await generateExpenseReference('EXPENSE', tx);
+      
+      await createExpenseEntry({
+        title: `Inventory Purchase: ${inventory.name}`,
+        category: 'ORDERS',
+        amount: expenseAmount,
+        type: 'EXPENSE',
+        date: new Date(),
+        description: `Purchased ${qty} ${inventory.unit} of ${inventory.name} at ₹${inventory.purchasePrice} each for ${warehouse.name}`,
+        reference: expenseReference,
+        userId
+      }, tx);
+
       return warehouseInventory;
     });
 
     res.status(200).json({ 
-      message: 'Inventory assigned to warehouse successfully', 
+      message: 'Inventory assigned and expense recorded successfully', 
       warehouseInventory: result 
     });
   } catch (err) {
+    console.error('Assign inventory error:', err);
     res.status(500).json({ message: 'Error assigning inventory', error: err.message });
   }
 };
@@ -396,11 +447,32 @@ export const adjustInventoryQuantity = async (req, res) => {
         }
       });
 
+      // 🆕 CREATE EXPENSE ENTRY FOR POSITIVE ADJUSTMENTS (Stock Added)
+      if (qty > 0) {
+        const expenseAmount = qty * parseFloat(existing.inventory.purchasePrice);
+        const expenseReference = await generateExpenseReference('EXPENSE', tx);
+        
+        await createExpenseEntry({
+          title: `Inventory Adjustment: ${existing.inventory.name}`,
+          category: 'ORDERS',
+          amount: expenseAmount,
+          type: 'EXPENSE',
+          date: new Date(),
+          description: `Added ${qty} ${existing.inventory.unit} via adjustment - ${remarks || 'Stock adjustment'}`,
+          reference: expenseReference,
+          userId
+        }, tx);
+      }
+
       return updated;
     });
 
-    res.json({ message: 'Inventory quantity adjusted', warehouseInventory: result });
+    res.json({ 
+      message: 'Inventory quantity adjusted and expense recorded', 
+      warehouseInventory: result 
+    });
   } catch (err) {
+    console.error('Adjust inventory error:', err);
     res.status(500).json({ message: 'Error adjusting inventory', error: err.message });
   }
 };

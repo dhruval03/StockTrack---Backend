@@ -14,7 +14,7 @@ import {
 const router = express.Router();
 
 // All warehouse routes are protected and only accessible by ADMIN
-router.use(protect, authorizeRoles('ADMIN'));
+router.use(protect, authorizeRoles('ADMIN', 'MANAGER'));
 
 router.get('/warehouse/all', getAllWarehouses);
 router.get('/warehouse/:id', getWarehouseById);
